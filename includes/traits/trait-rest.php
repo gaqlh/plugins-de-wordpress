@@ -84,6 +84,21 @@ trait VSC_PO_Trait_REST {
             $cat = $req->get_param('category') ? intval($req->get_param('category')) : 0;
             $stock_filter = sanitize_text_field($req->get_param('stock') !== null ? $req->get_param('stock') : 'all');
             $supplier_id = intval($req->get_param('supplier_id') ? $req->get_param('supplier_id') : 0);
+
+            // Multi-supplier filter support. Accepts supplier_ids[]=1&supplier_ids[]=2 or supplier_ids=1,2
+            $supplier_ids_raw = $req->get_param('supplier_ids');
+            $supplier_ids = [];
+            if (is_array($supplier_ids_raw)) {
+                $supplier_ids = array_map('intval', $supplier_ids_raw);
+            } elseif (is_string($supplier_ids_raw) && $supplier_ids_raw !== '') {
+                $supplier_ids = array_map('intval', preg_split('/\s*,\s*/', $supplier_ids_raw));
+            }
+            $supplier_ids = array_values(array_unique(array_filter($supplier_ids, function($v){ return $v > 0; })));
+
+            // Back-compat: if supplier_id is used and supplier_ids is empty, treat as a single selection.
+            if ($supplier_id > 0 && empty($supplier_ids)) {
+                $supplier_ids = [$supplier_id];
+            }
             $page = max(1, intval($req->get_param('page') !== null ? $req->get_param('page') : 1));
             $per_page = min(200, max(1, intval($req->get_param('per_page') !== null ? $req->get_param('per_page') : 20)));
             $offset = ($page - 1) * $per_page;
@@ -167,7 +182,7 @@ trait VSC_PO_Trait_REST {
             }
     
             // Supplier filter: include products that THIS supplier sells (is_available=1 and wholesale_cost>0).
-            if ($supplier_id > 0) {
+            if (!empty($supplier_ids)) {
                 if (!self::tables_exist()) {
                     return rest_ensure_response([
                         'items' => [],
@@ -176,13 +191,14 @@ trait VSC_PO_Trait_REST {
                         'total' => 0,
                     ]);
                 }
-    
+
+                $placeholders = implode(',', array_fill(0, count($supplier_ids), '%d'));
                 $where[] = "EXISTS (SELECT 1 FROM {$t['prices']} sp
                                    WHERE sp.product_id = p.ID
-                                     AND sp.supplier_id = %d
+                                     AND sp.supplier_id IN ($placeholders)
                                      AND sp.is_available = 1
                                      AND sp.wholesale_cost > 0)";
-                $params[] = $supplier_id;
+                foreach ($supplier_ids as $sid) { $params[] = intval($sid); }
             }
     
             // Stock filter must be applied at SQL level so pagination/total reflects filtered set.

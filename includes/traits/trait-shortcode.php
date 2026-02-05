@@ -56,9 +56,10 @@ public static function render_shortcode($atts = []) {
                             <option value="good">Stock normal</option>
                             <option value="pending">Pendientes</option>
                         </select>
-                        <select id="vscPoSupplierFilter" class="vsc-po-select">
-                            <option value="" selected disabled hidden>Cargando proveedores...</option>
-                        </select>
+                        <div class="vsc-po-multiselect" id="vscPoSupplierFilter">
+                            <button type="button" class="vsc-po-multiselect__btn" id="vscPoSupplierBtn">Cargando proveedores...</button>
+                            <div class="vsc-po-multiselect__panel" id="vscPoSupplierPanel" aria-hidden="true"></div>
+                        </div>
                         <select id="vscPoPerPage" class="vsc-po-select">
                             <option value="10">10</option>
                             <option value="20" selected>20</option>
