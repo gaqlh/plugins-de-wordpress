@@ -82,23 +82,10 @@ trait VSC_PO_Trait_REST {
     
             $search = sanitize_text_field($req->get_param('search') !== null ? $req->get_param('search') : '');
             $cat = $req->get_param('category') ? intval($req->get_param('category')) : 0;
+            $category_ids = $req->get_param('category_ids');
             $stock_filter = sanitize_text_field($req->get_param('stock') !== null ? $req->get_param('stock') : 'all');
             $supplier_id = intval($req->get_param('supplier_id') ? $req->get_param('supplier_id') : 0);
-
-            // Multi-supplier filter support. Accepts supplier_ids[]=1&supplier_ids[]=2 or supplier_ids=1,2
-            $supplier_ids_raw = $req->get_param('supplier_ids');
-            $supplier_ids = [];
-            if (is_array($supplier_ids_raw)) {
-                $supplier_ids = array_map('intval', $supplier_ids_raw);
-            } elseif (is_string($supplier_ids_raw) && $supplier_ids_raw !== '') {
-                $supplier_ids = array_map('intval', preg_split('/\s*,\s*/', $supplier_ids_raw));
-            }
-            $supplier_ids = array_values(array_unique(array_filter($supplier_ids, function($v){ return $v > 0; })));
-
-            // Back-compat: if supplier_id is used and supplier_ids is empty, treat as a single selection.
-            if ($supplier_id > 0 && empty($supplier_ids)) {
-                $supplier_ids = [$supplier_id];
-            }
+            $supplier_ids = $req->get_param('supplier_ids');
             $page = max(1, intval($req->get_param('page') !== null ? $req->get_param('page') : 1));
             $per_page = min(200, max(1, intval($req->get_param('per_page') !== null ? $req->get_param('per_page') : 20)));
             $offset = ($page - 1) * $per_page;
@@ -150,58 +137,95 @@ trait VSC_PO_Trait_REST {
                     $params[] = $like;
                 }
             }
-    
-            // Category: applies to parent products; variations inherit from parent.
-            if ($cat) {
-                $term_ids = [$cat];
-                $children = get_term_children($cat, 'product_cat');
-                if (!is_wp_error($children) && is_array($children) && !empty($children)) {
-                    $term_ids = array_unique(array_merge($term_ids, array_map('intval', $children)));
-                }
-                $term_ids = array_filter(array_map('intval', $term_ids));
-    
-                if (!empty($term_ids)) {
-                    $in_terms = implode(',', $term_ids);
-    
-                    $parent_sub = "SELECT DISTINCT tr.object_id
-                                   FROM $term_rel tr
-                                   INNER JOIN $term_tax tt ON tt.term_taxonomy_id = tr.term_taxonomy_id
-                                   WHERE tt.taxonomy = 'product_cat'
-                                     AND tt.term_id IN ($in_terms)";
-    
-                    $where[] = "( (p.post_type = 'product' AND p.ID IN ($parent_sub))
-                                 OR (p.post_type = 'product_variation' AND p.post_parent IN ($parent_sub)) )";
-                } else {
-                    return rest_ensure_response([
-                        'items' => [],
-                        'page' => $page,
-                        'per_page' => $per_page,
-                        'total' => 0,
-                    ]);
-                }
-            }
-    
-            // Supplier filter: include products that THIS supplier sells (is_available=1 and wholesale_cost>0).
-            if (!empty($supplier_ids)) {
-                if (!self::tables_exist()) {
-                    return rest_ensure_response([
-                        'items' => [],
-                        'page' => $page,
-                        'per_page' => $per_page,
-                        'total' => 0,
-                    ]);
-                }
 
-                $placeholders = implode(',', array_fill(0, count($supplier_ids), '%d'));
-                $where[] = "EXISTS (SELECT 1 FROM {$t['prices']} sp
-                                   WHERE sp.product_id = p.ID
-                                     AND sp.supplier_id IN ($placeholders)
-                                     AND sp.is_available = 1
-                                     AND sp.wholesale_cost > 0)";
-                foreach ($supplier_ids as $sid) { $params[] = intval($sid); }
-            }
-    
-            // Stock filter must be applied at SQL level so pagination/total reflects filtered set.
+// Category: applies to parent products; variations inherit from parent.
+// Supports either single `category` or multiple `category_ids` (array or CSV).
+$cats = [];
+if ($cat) { $cats[] = $cat; }
+if (!empty($category_ids)) {
+    if (is_string($category_ids)) {
+        $category_ids = array_filter(array_map('trim', explode(',', $category_ids)));
+    }
+    if (is_array($category_ids)) {
+        foreach ($category_ids as $cid) {
+            $cid = intval($cid);
+            if ($cid) $cats[] = $cid;
+        }
+    }
+}
+$cats = array_values(array_unique(array_filter(array_map('intval', $cats))));
+
+if (!empty($cats)) {
+    // Expand with children for each selected category
+    $term_ids = [];
+    foreach ($cats as $c0) {
+        $term_ids[] = $c0;
+        $children = get_term_children($c0, 'product_cat');
+        if (!is_wp_error($children) && is_array($children) && !empty($children)) {
+            $term_ids = array_merge($term_ids, array_map('intval', $children));
+        }
+    }
+    $term_ids = array_values(array_unique(array_filter(array_map('intval', $term_ids))));
+
+    if (!empty($term_ids)) {
+        $in_terms = implode(',', $term_ids);
+
+        $parent_sub = "SELECT DISTINCT tr.object_id
+                       FROM $term_rel tr
+                       INNER JOIN $term_tax tt ON tt.term_taxonomy_id = tr.term_taxonomy_id
+                       WHERE tt.taxonomy = 'product_cat'
+                         AND tt.term_id IN ($in_terms)";
+
+        $where[] = "( (p.post_type = 'product' AND p.ID IN ($parent_sub))
+                     OR (p.post_type = 'product_variation' AND p.post_parent IN ($parent_sub)) )";
+    } else {
+        return rest_ensure_response([
+            'items' => [],
+            'page' => $page,
+            'per_page' => $per_page,
+            'total' => 0,
+        ]);
+    }
+}
+
+// Supplier filter: include products that ANY of these suppliers sells (is_available=1 and wholesale_cost>0).
+// Supports either single `supplier_id` or multiple `supplier_ids` (array or CSV).
+$sups = [];
+if ($supplier_id > 0) { $sups[] = $supplier_id; }
+if (!empty($supplier_ids)) {
+    if (is_string($supplier_ids)) {
+        $supplier_ids = array_filter(array_map('trim', explode(',', $supplier_ids)));
+    }
+    if (is_array($supplier_ids)) {
+        foreach ($supplier_ids as $sid) {
+            $sid = intval($sid);
+            if ($sid) $sups[] = $sid;
+        }
+    }
+}
+$sups = array_values(array_unique(array_filter(array_map('intval', $sups))));
+
+if (!empty($sups)) {
+    if (!self::tables_exist()) {
+        return rest_ensure_response([
+            'items' => [],
+            'page' => $page,
+            'per_page' => $per_page,
+            'total' => 0,
+        ]);
+    }
+
+    // Build placeholders for IN clause
+    $placeholders = implode(',', array_fill(0, count($sups), '%d'));
+    $where[] = "EXISTS (SELECT 1 FROM {$t['prices']} sp
+                       WHERE sp.product_id = p.ID
+                         AND sp.supplier_id IN ($placeholders)
+                         AND sp.is_available = 1
+                         AND sp.wholesale_cost > 0)";
+    foreach ($sups as $sid) { $params[] = $sid; }
+}
+
+// Stock filter must be applied at SQL level so pagination/total reflects filtered set.
             // Mirror compute_stock_status() logic as closely as possible using postmeta.
             if ($stock_filter && $stock_filter !== 'all') {
                 $default_low_opt = get_option('woocommerce_notify_low_stock_amount', '');

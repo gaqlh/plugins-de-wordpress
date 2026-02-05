@@ -45,9 +45,10 @@ public static function render_shortcode($atts = []) {
                     <div class="vsc-po-toolbar__left">
                         <input type="text" id="vscPoSearch" class="vsc-po-input" placeholder="Buscar por SKU o nombre (usa = para exacto)" />
                         <button class="vsc-po-btn" id="vscPoRefresh">Buscar</button>
-                        <select id="vscPoCategory" class="vsc-po-select">
-                            <option value="" selected disabled hidden>Cargando categorías...</option>
-                        </select>
+                        <div class="vsc-po-multiselect" id="vscPoCategoryFilter">
+                            <button type="button" class="vsc-po-multiselect__btn" id="vscPoCategoryBtn">Cargando categorías...</button>
+                            <div class="vsc-po-multiselect__panel" id="vscPoCategoryPanel" aria-hidden="true"></div>
+                        </div>
                         <select id="vscPoStockFilter" class="vsc-po-select vsc-po-stockfilter">
                             <option value="" selected disabled hidden>Filtrar por stock</option>
                             <option value="all">Todos los productos</option>
